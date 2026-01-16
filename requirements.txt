@@ -1,0 +1,7 @@
+pandas
+numpy
+streamlit
+sentence-transformers
+faiss-cpu
+transformers
+torch
