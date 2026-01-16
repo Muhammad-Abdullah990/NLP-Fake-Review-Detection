@@ -5,6 +5,15 @@ import pickle
 from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 import torch
 
+import os
+import subprocess
+
+# Check if index exists, if not, run the build script
+if not os.path.exists("reviews.index") or not os.path.exists("reviews.pkl"):
+    st.info("Building search index for the first time... this may take a moment.")
+    subprocess.run(["python", "build_index.py"])
+    st.success("Index built successfully!")
+
 # -----------------------------
 # Load FAISS + reviews
 # -----------------------------
@@ -94,3 +103,4 @@ if st.button("Analyze"):
         st.subheader("Retrieved Similar Reviews (RAG Context)")
         for r in docs:
             st.write("-", r)
+
