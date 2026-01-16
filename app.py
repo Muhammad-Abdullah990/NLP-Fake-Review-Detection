@@ -1,46 +1,53 @@
-import streamlit as st
+import os
+import pickle
 import numpy as np
+import streamlit as st
 import faiss
-import pickle
-from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
-import torch
-
-import os
-import subprocess
-
-# Check if index exists, if not, run the build script
-if not os.path.exists("reviews.index") or not os.path.exists("reviews.pkl"):
-    st.info("Building search index for the first time... this may take a moment.")
-    subprocess.run(["python", "build_index.py"])
-    st.success("Index built successfully!")
-
-# -----------------------------
-# Load FAISS + reviews
-# -----------------------------
-import os
-import faiss
-import pickle
 import pandas as pd
 from sentence_transformers import SentenceTransformer
+from transformers import pipeline
 
+# -----------------------------
+# Config
+# -----------------------------
 MODEL_NAME = "all-MiniLM-L6-v2"
+CSV_FILE = "fake_reviews_dataset.csv"
 INDEX_FILE = "reviews.index"
 DATA_FILE = "reviews.pkl"
-CSV_FILE = "Dataset.csv"
 
-@st.cache_resource
-def load_model():
+st.set_page_config(page_title="🕵️ Fake Review Detection", layout="centered")
+st.title("🕵️ Fake Review Detection (RAG + NLP)")
+
+# -----------------------------
+# Load embedding model (cached)
+# -----------------------------
+@st.cache_resource(show_spinner="Loading embedding model...")
+def load_embedding_model():
     return SentenceTransformer(MODEL_NAME)
 
-model = load_model()
-
+# -----------------------------
+# Build index if missing
+# -----------------------------
 def build_index():
     st.info("Building search index for the first time... this may take a moment.")
 
-    df = pd.read_csv(CSV_FILE)
-    texts = df["review"].astype(str).tolist()
+    if not os.path.exists(CSV_FILE):
+        st.error(f"❌ {CSV_FILE} not found in repo root")
+        st.stop()
 
-    embeddings = model.encode(texts, show_progress_bar=True)
+    df = pd.read_csv(CSV_FILE)
+
+    if "review" in df.columns:
+        texts = df["review"].astype(str).tolist()
+    else:
+        texts = df.iloc[:, 0].astype(str).tolist()
+
+    model = load_embedding_model()
+    embeddings = model.encode(
+        texts,
+        show_progress_bar=True,
+        convert_to_numpy=True
+    )
 
     dim = embeddings.shape[1]
     index = faiss.IndexFlatL2(dim)
@@ -54,6 +61,9 @@ def build_index():
     return index, texts
 
 
+# -----------------------------
+# Load index & reviews
+# -----------------------------
 if not os.path.exists(INDEX_FILE) or not os.path.exists(DATA_FILE):
     index, reviews = build_index()
 else:
@@ -62,86 +72,59 @@ else:
         reviews = pickle.load(f)
 
 # -----------------------------
-# FAISS embeddings function
+# Retrieval
 # -----------------------------
-from transformers import AutoTokenizer, AutoModel
-def embed_text(text_list):
-    tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-    model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-    inputs = tokenizer(text_list, padding=True, truncation=True, return_tensors="pt")
-    with torch.no_grad():
-        outputs = model(**inputs)
-        embeddings = outputs.last_hidden_state.mean(dim=1)
-    return embeddings.numpy()
-
 def retrieve(query, k=5):
-    q_emb = embed_text([query])
-    D, I = index.search(np.array(q_emb), k)
+    model = load_embedding_model()
+    q_emb = model.encode([query], convert_to_numpy=True)
+    D, I = index.search(q_emb, k)
     return [reviews[i] for i in I[0]]
 
 # -----------------------------
-# Load DistilBERT sentiment classifier (binary)
+# Sentiment classifier (CPU)
 # -----------------------------
-classifier = pipeline(
-    "text-classification",
-    model="distilbert-base-uncased-finetuned-sst-2-english",
-    device=-1  # CPU
-)
+@st.cache_resource(show_spinner="Loading classifier...")
+def load_classifier():
+    return pipeline(
+        "text-classification",
+        model="distilbert-base-uncased-finetuned-sst-2-english",
+        device=-1
+    )
+
+classifier = load_classifier()
 
 # -----------------------------
-# Fake review detection
+# Fake review detection logic
 # -----------------------------
 def detect(review):
     docs = retrieve(review)
     context = "\n".join(docs)
 
-    # Combine review + context
-    input_text = f"{review}\nContext:\n{context}"
-
+    input_text = f"{review}\n\nContext:\n{context}"
     result = classifier(input_text)[0]
-    label_raw = result["label"]
+
+    label = "Fake" if result["label"] == "NEGATIVE" else "Genuine"
     score = result["score"]
 
-    # Map sentiment to fake review categories
-    if label_raw == "NEGATIVE":
-        mapped_label = "Fake"
-    else:  # POSITIVE
-        mapped_label = "Genuine"
-
-    return mapped_label, score, docs
+    return label, score, docs
 
 # -----------------------------
-# Streamlit UI
+# UI
 # -----------------------------
-st.set_page_config(page_title="🕵️ Fake Review Detection")
-st.title("🕵️ Fake Review Detection (RAG + DistilBERT)")
-
-text = st.text_area("Enter a review to analyze", height=150)
+text = st.text_area("Enter a review to analyze", height=160)
 
 if st.button("Analyze"):
     if not text.strip():
-        st.warning("Please enter a review first!")
+        st.warning("Please enter a review first.")
     else:
-        with st.spinner("Analyzing..."):
+        with st.spinner("Analyzing review..."):
             label, score, docs = detect(text)
-
-        # Color-coded labels
-        color_map = {
-            "Very Genuine": "#28a745",
-            "Genuine": "#7bc67e",
-            "Moderate": "#ffc107",
-            "Fake": "#fd7e14",
-            "Very Fake": "#dc3545"
-        }
 
         st.subheader("Result")
         st.markdown(
-            f"<h3 style='color:{color_map.get(label,'black')}'>{label} ({score*100:.1f}%)</h3>",
-            unsafe_allow_html=True
+            f"### **{label}**  \nConfidence: **{score*100:.2f}%**"
         )
 
-        st.subheader("Retrieved Similar Reviews (RAG Context)")
+        st.subheader("Retrieved Similar Reviews")
         for r in docs:
-            st.write("-", r)
-
-
+            st.write("•", r)
