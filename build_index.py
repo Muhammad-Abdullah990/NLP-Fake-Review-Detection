@@ -1,55 +1,52 @@
-import pandas as pd
-import numpy as np
-import faiss
+import os
 import pickle
-from transformers import AutoTokenizer, AutoModel
-import torch
+import pandas as pd
+import faiss
+from sentence_transformers import SentenceTransformer
 
-# -----------------------------
-# Load dataset
-# -----------------------------
-print("Loading dataset...")
-df = pd.read_csv("fake_reviews_dataset.csv")  # Ensure your reviews are in first column
-reviews = df.iloc[:, 0].astype(str).tolist()
+CSV_FILE = "fake_reviews_dataset.csv"
+INDEX_FILE = "reviews.index"
+DATA_FILE = "reviews.pkl"
+MODEL_NAME = "all-MiniLM-L6-v2"
 
-# -----------------------------
-# Load HuggingFace MiniLM model for embeddings
-# -----------------------------
-print("Loading embedding model...")
-tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
 
-# -----------------------------
-# Function to compute embeddings
-# -----------------------------
-def embed_text(text_list):
-    inputs = tokenizer(text_list, padding=True, truncation=True, return_tensors="pt")
-    with torch.no_grad():
-        outputs = model(**inputs)
-        # Mean pooling of last hidden states
-        embeddings = outputs.last_hidden_state.mean(dim=1)
-    return embeddings.numpy()
+def main():
+    if not os.path.exists(CSV_FILE):
+        raise FileNotFoundError(f"{CSV_FILE} not found in repo root")
 
-# -----------------------------
-# Compute embeddings
-# -----------------------------
-print("Encoding reviews...")
-embeddings = embed_text(reviews)
+    print("Loading dataset...")
+    df = pd.read_csv(CSV_FILE)
 
-# -----------------------------
-# Build FAISS index
-# -----------------------------
-print("Building FAISS index...")
-dimension = embeddings.shape[1]
-index = faiss.IndexFlatL2(dimension)
-index.add(np.array(embeddings))
+    # Use first column OR a column named 'review'
+    if "review" in df.columns:
+        texts = df["review"].astype(str).tolist()
+    else:
+        texts = df.iloc[:, 0].astype(str).tolist()
 
-# -----------------------------
-# Save index and review list
-# -----------------------------
-print("Saving index and reviews...")
-faiss.write_index(index, "reviews.index")
-with open("reviews.pkl", "wb") as f:
-    pickle.dump(reviews, f)
+    print(f"Loaded {len(texts)} reviews")
 
-print("DONE! Your FAISS index and reviews are ready.")
+    print("Loading SentenceTransformer model...")
+    model = SentenceTransformer(MODEL_NAME)
+
+    print("Encoding reviews...")
+    embeddings = model.encode(
+        texts,
+        show_progress_bar=True,
+        convert_to_numpy=True
+    )
+
+    print("Building FAISS index...")
+    dim = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dim)
+    index.add(embeddings)
+
+    print("Saving index & review text...")
+    faiss.write_index(index, INDEX_FILE)
+    with open(DATA_FILE, "wb") as f:
+        pickle.dump(texts, f)
+
+    print("✅ Index build complete!")
+
+
+if __name__ == "__main__":
+    main()
