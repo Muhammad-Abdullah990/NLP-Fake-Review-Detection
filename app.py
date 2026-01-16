@@ -17,9 +17,49 @@ if not os.path.exists("reviews.index") or not os.path.exists("reviews.pkl"):
 # -----------------------------
 # Load FAISS + reviews
 # -----------------------------
-index = faiss.read_index("reviews.index")
-with open("reviews.pkl", "rb") as f:
-    reviews = pickle.load(f)
+import os
+import faiss
+import pickle
+import pandas as pd
+from sentence_transformers import SentenceTransformer
+
+MODEL_NAME = "all-MiniLM-L6-v2"
+INDEX_FILE = "reviews.index"
+DATA_FILE = "reviews.pkl"
+CSV_FILE = "Dataset.csv"
+
+@st.cache_resource
+def load_model():
+    return SentenceTransformer(MODEL_NAME)
+
+model = load_model()
+
+def build_index():
+    st.info("Building search index for the first time... this may take a moment.")
+
+    df = pd.read_csv(CSV_FILE)
+    texts = df["review"].astype(str).tolist()
+
+    embeddings = model.encode(texts, show_progress_bar=True)
+
+    dim = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dim)
+    index.add(embeddings)
+
+    faiss.write_index(index, INDEX_FILE)
+    with open(DATA_FILE, "wb") as f:
+        pickle.dump(texts, f)
+
+    st.success("Index built successfully!")
+    return index, texts
+
+
+if not os.path.exists(INDEX_FILE) or not os.path.exists(DATA_FILE):
+    index, reviews = build_index()
+else:
+    index = faiss.read_index(INDEX_FILE)
+    with open(DATA_FILE, "rb") as f:
+        reviews = pickle.load(f)
 
 # -----------------------------
 # FAISS embeddings function
@@ -103,4 +143,5 @@ if st.button("Analyze"):
         st.subheader("Retrieved Similar Reviews (RAG Context)")
         for r in docs:
             st.write("-", r)
+
 
